@@ -169,6 +169,7 @@ def parse_json_list(val):
 # 4. ДВИЖОК «ЕДИНОГО ОКНА»
 # ==========================================
 async def safe_update_ui(user_id: int, text: str, reply_markup=None, photo_id=None):
+    """Тихое обновление текущего окна (редактирование)"""
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute("SELECT last_message_id FROM users WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
@@ -187,7 +188,9 @@ async def safe_update_ui(user_id: int, text: str, reply_markup=None, photo_id=No
             else:
                 try:
                     new_msg = await bot.edit_message_text(text=text, chat_id=user_id, message_id=last_msg_id, reply_markup=reply_markup)
-                except TelegramAPIError:
+                except TelegramAPIError as e:
+                    if "message is not modified" in str(e).lower():
+                        return # Игнорируем, если текст не изменился
                     try: await bot.delete_message(chat_id=user_id, message_id=last_msg_id)
                     except: pass
                     new_msg = await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
@@ -203,6 +206,27 @@ async def safe_update_ui(user_id: int, text: str, reply_markup=None, photo_id=No
                 await db.commit()
     except Exception as e:
         logging.error(f"UI update error: {e}")
+
+async def send_notification(user_id: int, text: str, reply_markup=None):
+    """Отправка нового сообщения с удалением старого (для пуш-уведомлений и рассылок)"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT last_message_id FROM users WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        last_msg_id = row[0] if row else 0
+
+        # Удаляем старое окно, чтобы не захламлять чат
+        if last_msg_id:
+            try: await bot.delete_message(chat_id=user_id, message_id=last_msg_id)
+            except: pass
+
+        # Отправляем новое сообщение, чтобы юзер получил пуш-уведомление
+        try:
+            new_msg = await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
+            # Перезаписываем ID единого окна
+            await db.execute("UPDATE users SET last_message_id = ? WHERE user_id = ?", (new_msg.message_id, user_id))
+            await db.commit()
+        except Exception as e:
+            logging.error(f"Notification error: {e}")
 
 async def init_user(user_id: int, username: str):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -763,8 +787,12 @@ async def admin_reply_start(callback: types.CallbackQuery, state: FSMContext):
 async def admin_reply_process(message: types.Message, state: FSMContext):
     target_id = (await state.get_data()).get('reply_to_user')
     text_for_user = f"👨‍⚕️ <b>Ответ от Администратора:</b>\n\n{message.html_text}"
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔙 В главное меню", callback_data="menu_main")
+    
     try:
-        await bot.send_message(target_id, text_for_user)
+        await send_notification(target_id, text_for_user, builder.as_markup())
         await message.answer("✅ Ответ доставлен!")
     except Exception:
         await message.answer("❌ Ошибка доставки.")
@@ -993,7 +1021,7 @@ async def admin_publish_all(callback: types.CallbackQuery):
     success = 0
     for (uid,) in users:
         try:
-            await bot.send_message(uid, notification_text, reply_markup=builder.as_markup())
+            await send_notification(uid, notification_text, builder.as_markup())
             success += 1
         except: pass
         await asyncio.sleep(0.05)
@@ -1247,7 +1275,7 @@ async def admin_import_db_process(message: types.Message, state: FSMContext):
 async def admin_export_csv(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID: return
     async with aiosqlite.connect(DB_NAME) as db:
-        users = await (await db.execute("SELECT user_id, username, score, weekly_score, course FROM users ORDER BY score DESC")).fetchall()
+        users = await (await db.execute("SELECT user_id, username, course, score, weekly_score FROM users ORDER BY score DESC")).fetchall()
     output = io.StringIO()
     writer = csv.writer(output, delimiter=';') 
     writer.writerow(['ID Telegram', 'Имя', 'Курс', 'Очки (Всего)', 'Очки (Неделя)'])
@@ -1268,7 +1296,7 @@ async def process_broadcast(message: types.Message, state: FSMContext):
     success = 0
     for (uid,) in users:
         try:
-            await bot.send_message(uid, message.html_text)
+            await send_notification(uid, message.html_text)
             success += 1
         except: pass
         await asyncio.sleep(0.05)
@@ -1295,7 +1323,7 @@ async def admin_clear_ranks_yes(callback: types.CallbackQuery):
 # ==========================================
 async def main():
     await init_db()
-    print("Бот МедиСферы v3 (Smart Edit) успешно запущен!")
+    print("Бот МедиСферы успешно запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
