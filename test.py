@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timedelta
 
 import aiosqlite
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
@@ -16,13 +17,13 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import FSInputFile, BufferedInputFile
+from aiogram.types import FSInputFile, BufferedInputFile, WebAppInfo # ❗️ ДОБАВИЛИ WebAppInfo
 
 # ==========================================
 # 1. НАСТРОЙКИ БОТА И БАЗЫ ДАННЫХ
 # ==========================================
 BOT_TOKEN = "8268765014:AAFCbLjxw0vMAqOJKLOcWiEIWfNHX9OxcVM"
-ADMIN_ID = 770794055 # ❗️ ВСТАВЬ СЮДА СВОЙ TELEGRAM ID ❗️
+ADMIN_ID = 770794055 # ❗️ ТВОЙ ID
 
 logging.basicConfig(level=logging.INFO)
 
@@ -31,7 +32,6 @@ dp = Dispatcher()
 
 DB_NAME = "medisphere.db"
 
-# Структура курсов и предметов (Ключи без нижних подчеркиваний для защиты от багов)
 COURSES = {
     "c1": {
         "name": "1 курс",
@@ -60,7 +60,6 @@ class EditProfileState(StatesGroup):
     waiting_for_name = State()
 
 class AdminState(StatesGroup):
-    # Создание теста
     waiting_for_course = State()
     waiting_for_subject = State()
     waiting_for_q_text = State()
@@ -68,19 +67,13 @@ class AdminState(StatesGroup):
     waiting_for_q_correct = State()
     waiting_for_q_expl = State()
     waiting_for_test_title = State()
-    
-    # Управление
     waiting_for_broadcast = State()
     waiting_for_q_del_id = State()
     waiting_for_db_file = State()
     waiting_for_support_reply = State()
-    
-    # Редактирование теста
     waiting_for_edit_test_id = State()
     waiting_for_new_test_title = State()
     waiting_for_del_question_id = State()
-    
-    # Умное редактирование вопроса
     waiting_for_edit_q_id = State()
     waiting_for_edit_q_text_photo = State()
     waiting_for_edit_q_opts = State()
@@ -169,7 +162,6 @@ def parse_json_list(val):
 # 4. ДВИЖОК «ЕДИНОГО ОКНА»
 # ==========================================
 async def safe_update_ui(user_id: int, text: str, reply_markup=None, photo_id=None):
-    """Тихое обновление текущего окна (редактирование)"""
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute("SELECT last_message_id FROM users WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
@@ -190,7 +182,7 @@ async def safe_update_ui(user_id: int, text: str, reply_markup=None, photo_id=No
                     new_msg = await bot.edit_message_text(text=text, chat_id=user_id, message_id=last_msg_id, reply_markup=reply_markup)
                 except TelegramAPIError as e:
                     if "message is not modified" in str(e).lower():
-                        return # Игнорируем, если текст не изменился
+                        return
                     try: await bot.delete_message(chat_id=user_id, message_id=last_msg_id)
                     except: pass
                     new_msg = await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
@@ -208,21 +200,17 @@ async def safe_update_ui(user_id: int, text: str, reply_markup=None, photo_id=No
         logging.error(f"UI update error: {e}")
 
 async def send_notification(user_id: int, text: str, reply_markup=None):
-    """Отправка нового сообщения с удалением старого (для пуш-уведомлений и рассылок)"""
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute("SELECT last_message_id FROM users WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
         last_msg_id = row[0] if row else 0
 
-        # Удаляем старое окно, чтобы не захламлять чат
         if last_msg_id:
             try: await bot.delete_message(chat_id=user_id, message_id=last_msg_id)
             except: pass
 
-        # Отправляем новое сообщение, чтобы юзер получил пуш-уведомление
         try:
             new_msg = await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
-            # Перезаписываем ID единого окна
             await db.execute("UPDATE users SET last_message_id = ? WHERE user_id = ?", (new_msg.message_id, user_id))
             await db.commit()
         except Exception as e:
@@ -326,13 +314,21 @@ async def render_main_menu(user_id: int, prefix: str = ""):
         username = row[0] if row else "Врач"
         
     text = f"{prefix}Привет, <b>{username}</b>! Добро пожаловать в бот <b>МедиСферы</b>. 🧬\n\nВыбери нужный раздел:"
+    
+    # ❗️❗️❗️ ВОТ ТУТ МЫ ДОБАВЛЯЕМ КНОПКУ МИНИ ПРИЛОЖЕНИЯ ❗️❗️❗️
     builder = InlineKeyboardBuilder()
-    builder.button(text="🧠 Выбрать квиз", callback_data="menu_courses")
+    
+    # ВСТАВЬ СВОЮ ССЫЛКУ ИЗ NETLIFY СЮДА:
+    builder.button(text="🚀 Открыть Mini App", web_app=WebAppInfo(url="https://6a1ee87d2d38a74f9462098c--relaxed-swan-8a5527.netlify.app/"))
+    
+    builder.button(text="🧠 Выбрать квиз (Старая версия)", callback_data="menu_courses")
     builder.button(text="👤 Мой профиль", callback_data="menu_profile")
     builder.button(text="🏆 Лидерборд", callback_data="menu_top")
     builder.button(text="ℹ️ Информация", callback_data="menu_info")
     builder.button(text="📩 Связь с админом", callback_data="menu_support")
-    builder.adjust(1, 2, 2)
+    
+    builder.adjust(1, 1, 2, 2)
+    
     await safe_update_ui(user_id, text, builder.as_markup())
 
 @dp.callback_query(F.data == "menu_main")
@@ -1060,7 +1056,6 @@ async def process_edit_test_id(message: types.Message, state: FSMContext):
     if not message.text.isdigit(): return await message.answer("Только числа!")
     t_id = int(message.text)
     await state.update_data(edit_test_id=t_id)
-    # Искусственно добавляем флаг, чтобы знать, что это обычный message
     await show_edit_test_menu(message, t_id)
 
 @dp.callback_query(F.data == "back_to_edit_test")
@@ -1319,11 +1314,79 @@ async def admin_clear_ranks_yes(callback: types.CallbackQuery):
     await callback.message.edit_text("✅ Рейтинги всех пользователей обнулены.", reply_markup=InlineKeyboardBuilder().button(text="🔙 Назад", callback_data="admin_main").as_markup())
 
 # ==========================================
-# 11. ЗАПУСК БОТА
+# 11. API СЕРВЕР (ДЛЯ MINI APP)
+# ==========================================
+
+@web.middleware
+async def cors_middleware(request, handler):
+    """Настройка CORS, чтобы React-приложение могло получать данные"""
+    if request.method == 'OPTIONS':
+        resp = web.Response()
+    else:
+        try:
+            resp = await handler(request)
+        except web.HTTPException as ex:
+            resp = ex
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return resp
+
+async def api_get_profile(request):
+    """API: Получить профиль пользователя по user_id"""
+    user_id = request.query.get('user_id')
+    if not user_id:
+        return web.json_response({"error": "user_id is required"}, status=400)
+        
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT username, score, weekly_score, course FROM users WHERE user_id = ?", (int(user_id),))
+        user = await cursor.fetchone()
+        
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+        
+    username, score, w_score, course = user
+    return web.json_response({
+        "username": username,
+        "score": score,
+        "weekly_score": w_score,
+        "course": course,
+        "rank": get_rank(score)
+    })
+
+async def api_get_courses(request):
+    """API: Получить список доступных курсов и предметов"""
+    return web.json_response(COURSES)
+
+async def api_get_leaderboard(request):
+    """API: Получить ТОП игроков"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT username, score FROM users WHERE is_registered = 1 ORDER BY score DESC LIMIT 10")
+        top_users = await cursor.fetchall()
+        
+    result = [{"username": u[0], "score": u[1]} for u in top_users]
+    return web.json_response(result)
+
+# ==========================================
+# 12. ЗАПУСК БОТА И СЕРВЕРА
 # ==========================================
 async def main():
     await init_db()
-    print("Бот МедиСферы успешно запущен!")
+    
+    # Настройка и запуск API сервера для Mini App
+    app = web.Application(middlewares=[cors_middleware])
+    app.router.add_get('/api/profile', api_get_profile)
+    app.router.add_get('/api/courses', api_get_courses)
+    app.router.add_get('/api/leaderboard', api_get_leaderboard)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8000)
+    await site.start()
+    print("🌐 Успех: API Сервер запущен на порту 8000 (Готов к Mini App)")
+    
+    # Запуск бота
+    print("🤖 Бот МедиСферы успешно запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
